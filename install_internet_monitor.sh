@@ -63,7 +63,15 @@ validate_node_number() {
 # Function to get configuration
 get_config() {
     if [ -f "$CONFIG_FILE" ]; then
+        # Validate config file before sourcing (basic security check)
+        if grep -q "^[^#]*[;&|<>]" "$CONFIG_FILE"; then
+            print_error "Invalid characters detected in configuration file. Please check $CONFIG_FILE"
+            exit 1
+        fi
+        # Source config file safely
+        set +u
         source "$CONFIG_FILE"
+        set -u
     fi
     
     # Prompt for AllStarLink node number with validation
@@ -178,7 +186,7 @@ if [ ! -x "$ASTERISK_CLI" ]; then
     ASTERISK_CLI=""
 fi
 
-# Log rotation function
+# Log rotation function (portable, doesn't require seq)
 rotate_log() {
     local log_file="$1"
     if [ ! -f "$log_file" ]; then
@@ -189,11 +197,13 @@ rotate_log() {
     log_size=$(stat -f%z "$log_file" 2>/dev/null || stat -c%s "$log_file" 2>/dev/null || echo 0)
     
     if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
-        # Rotate logs
-        for i in $(seq $((LOG_RETENTION - 1)) -1 1); do
+        # Rotate logs (portable loop, doesn't require seq)
+        local i=$((LOG_RETENTION - 1))
+        while [ "$i" -ge 1 ]; do
             if [ -f "${log_file}.${i}" ]; then
                 mv "${log_file}.${i}" "${log_file}.$((i + 1))"
             fi
+            i=$((i - 1))
         done
         mv "$log_file" "${log_file}.1"
         touch "$log_file"
@@ -543,6 +553,17 @@ download_audio_files() {
         exit 1
     }
     
+    # Check for download tool (wget or curl)
+    local download_cmd=""
+    if command -v wget >/dev/null 2>&1; then
+        download_cmd="wget"
+    elif command -v curl >/dev/null 2>&1; then
+        download_cmd="curl"
+    else
+        print_error "Neither wget nor curl is available. Please install one of them."
+        exit 1
+    fi
+    
     local audio_files=(
         "https://raw.githubusercontent.com/KD5FMU/Internet-Monitor-ASL3/main/internet-no.ul|internet-no.ul"
         "https://raw.githubusercontent.com/KD5FMU/Internet-Monitor-ASL3/main/internet-yes.ul|internet-yes.ul"
@@ -552,9 +573,16 @@ download_audio_files() {
         local url="${file_info%|*}"
         local filename="${file_info#*|}"
         
-        if ! wget -q -O "$filename" "$url"; then
-            print_error "Failed to download $filename"
-            exit 1
+        if [ "$download_cmd" = "wget" ]; then
+            if ! wget -q -O "$filename" "$url"; then
+                print_error "Failed to download $filename"
+                exit 1
+            fi
+        elif [ "$download_cmd" = "curl" ]; then
+            if ! curl -sSL -o "$filename" "$url"; then
+                print_error "Failed to download $filename"
+                exit 1
+            fi
         fi
         print_status "Downloaded $filename"
     done
